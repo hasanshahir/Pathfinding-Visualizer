@@ -35,6 +35,15 @@ struct Node
     bool operator>(const Node &other) const { return fCost > other.fCost; }
 };
 
+struct Bubble
+{
+    float x, y;
+    float vx, vy;
+    float life;
+    float maxLife;
+    float size;
+};
+
 const int ROWS = 25;
 const int COLS = 25;
 const int CELL_SIZE = 24;
@@ -43,12 +52,15 @@ const int WINDOW_HEIGHT = ROWS * CELL_SIZE + 50;
 
 enum Algorithm { ASTAR = 1, DIJKSTRA = 2, BFS = 3 };
 enum GameState { MENU, WALL_DESIGN, START_SELECTION, END_SELECTION, RUNNING, FINISHED };
+enum DragMode { NONE, DRAGGING_START, DRAGGING_END };
 
 class PathfindingVisualizer
 {
 private:
     sf::RenderWindow window;
     vector<vector<char>> grid;
+    vector<vector<int>> cellState;
+    vector<vector<float>> cellAnimation;  // For scale animation
     sf::Font font;
     GameState state;
     Algorithm currentAlgo;
@@ -59,8 +71,12 @@ private:
     double pathLength;
     bool pathFound;
     string statusMessage;
+    DragMode dragMode;
+    vector<Bubble> bubbles;
+    vector<Pos> pathToAnimate;
+    int pathAnimationIndex;
+    bool animatingPath;
 
-    // UI Elements
     vector<sf::RectangleShape> buttons;
     vector<string> buttonLabels;
 
@@ -82,8 +98,17 @@ public:
         pathLength = 0;
         pathFound = false;
         statusMessage = "";
+        dragMode = NONE;
+        pathAnimationIndex = 0;
+        animatingPath = false;
+
+        // FIX #1: Initialize startPos and endPos to sentinel values
+        startPos = {-1, -1};
+        endPos = {-1, -1};
 
         grid.assign(ROWS, vector<char>(COLS, ' '));
+        cellState.assign(ROWS, vector<int>(COLS, 0));
+        cellAnimation.assign(ROWS, vector<float>(COLS, 1.0f));
         initializeMenu();
     }
 
@@ -109,8 +134,21 @@ private:
             {
                 auto mouseClick = event->getIf<sf::Event::MouseButtonPressed>();
                 if (mouseClick)
-                {
                     handleMouseClick(mouseClick->position.x, mouseClick->position.y);
+            }
+
+            if (event->is<sf::Event::MouseButtonReleased>())
+            {
+                dragMode = NONE;
+            }
+
+            if (event->is<sf::Event::MouseMoved>())
+            {
+                auto mouseMoved = event->getIf<sf::Event::MouseMoved>();
+                // FIX #3: Only handle drag if actually dragging (dragMode != NONE)
+                if (mouseMoved && state == END_SELECTION && dragMode != NONE)
+                {
+                    handleMouseDrag(mouseMoved->position.x, mouseMoved->position.y);
                 }
             }
         }
@@ -139,8 +177,10 @@ private:
                 {
                     designChoice = i + 1;
                     createWallDesign(designChoice);
+                    cellState.assign(ROWS, vector<int>(COLS, 0));
+                    cellAnimation.assign(ROWS, vector<float>(COLS, 1.0f));
                     state = START_SELECTION;
-                    statusMessage = "Click to set START position (green)";
+                    statusMessage = "Click to set START position (green) - drag to move";
                     break;
                 }
             }
@@ -154,36 +194,136 @@ private:
             {
                 startPos = {row, col};
                 grid[row][col] = 'S';
+                dragMode = DRAGGING_START;
                 state = END_SELECTION;
-                statusMessage = "Click to set END position (red)";
+                statusMessage = "Click to set END position (red) - drag to move";
+                initializeEndSelectionMenu();
             }
         }
         else if (state == END_SELECTION)
         {
+            // Check for button clicks first
+            for (size_t i = 0; i < buttons.size(); i++)
+            {
+                if (buttons[i].getGlobalBounds().contains(sf::Vector2f(x, y)))
+                {
+                    if (buttonLabels[i] == "Run" && endPos.r >= 0 && endPos.c >= 0)
+                    {
+                        state = RUNNING;
+                        runAlgorithm();
+                        return;
+                    }
+                }
+            }
+
             int col = x / CELL_SIZE;
             int row = y / CELL_SIZE;
 
-            if (row >= 0 && row < ROWS && col >= 0 && col < COLS && 
-                grid[row][col] != '#' && !(row == startPos.r && col == startPos.c))
+            if (row >= 0 && row < ROWS && col >= 0 && col < COLS && grid[row][col] != '#')
             {
-                endPos = {row, col};
-                grid[row][col] = 'E';
-                state = RUNNING;
-                statusMessage = "Running algorithm...";
-                runAlgorithm();
+                // Check if clicking on start point to drag it
+                if (row == startPos.r && col == startPos.c)
+                {
+                    dragMode = DRAGGING_START;
+                    return;
+                }
+
+                // Check if clicking on end point to drag it
+                if (row == endPos.r && col == endPos.c)
+                {
+                    dragMode = DRAGGING_END;
+                    return;
+                }
+
+                // Set end point
+                if (!(row == startPos.r && col == startPos.c))
+                {
+                    // FIX #2: Guard against uninitialized endPos
+                    if (endPos.r >= 0 && endPos.c >= 0)
+                        grid[endPos.r][endPos.c] = ' ';
+                    
+                    endPos = {row, col};
+                    grid[row][col] = 'E';
+                    dragMode = DRAGGING_END;
+                }
             }
         }
         else if (state == FINISHED)
         {
-            if (buttons.size() > 0 && buttons[0].getGlobalBounds().contains(sf::Vector2f(x, y)))
+            for (size_t i = 0; i < buttons.size(); i++)
             {
-                state = MENU;
-                grid.assign(ROWS, vector<char>(COLS, ' '));
-                totalChecks = 0;
-                timeTaken = 0;
-                pathLength = 0;
-                initializeMenu();
+                if (buttons[i].getGlobalBounds().contains(sf::Vector2f(x, y)))
+                {
+                    if (buttonLabels[i] == "Run Again")
+                    {
+                        state = MENU;
+                        grid.assign(ROWS, vector<char>(COLS, ' '));
+                        cellState.assign(ROWS, vector<int>(COLS, 0));
+                        cellAnimation.assign(ROWS, vector<float>(COLS, 1.0f));
+                        bubbles.clear();
+                        totalChecks = 0;
+                        timeTaken = 0;
+                        pathLength = 0;
+                        startPos = {-1, -1};
+                        endPos = {-1, -1};
+                        initializeMenu();
+                    }
+                    else if (buttonLabels[i] == "Exit Program")
+                    {
+                        window.close();
+                    }
+                    break;
+                }
             }
+        }
+    }
+
+    void handleMouseDrag(int x, int y)
+    {
+        int col = x / CELL_SIZE;
+        int row = y / CELL_SIZE;
+
+        if (row < 0 || row >= ROWS || col < 0 || col >= COLS || grid[row][col] == '#')
+            return;
+
+        if (dragMode == DRAGGING_START)
+        {
+            if (!(row == endPos.r && col == endPos.c))
+            {
+                grid[startPos.r][startPos.c] = ' ';
+                startPos = {row, col};
+                grid[row][col] = 'S';
+                createBubbles(row, col, 3);
+            }
+        }
+        else if (dragMode == DRAGGING_END)
+        {
+            if (!(row == startPos.r && col == startPos.c))
+            {
+                grid[endPos.r][endPos.c] = ' ';
+                endPos = {row, col};
+                grid[row][col] = 'E';
+                createBubbles(row, col, 3);
+            }
+        }
+    }
+
+    void createBubbles(int row, int col, int count)
+    {
+        // FIX #2: Cap bubble count to prevent lag
+        if (bubbles.size() > 200) return;
+
+        for (int i = 0; i < count; i++)
+        {
+            Bubble b;
+            b.x = col * CELL_SIZE + CELL_SIZE / 2;
+            b.y = row * CELL_SIZE + CELL_SIZE / 2;
+            b.vx = (rand() % 100 - 50) / 50.0f;
+            b.vy = (rand() % 100 - 50) / 50.0f;
+            b.life = 1.0f;
+            b.maxLife = 1.0f;
+            b.size = 3.0f + (rand() % 5);
+            bubbles.push_back(b);
         }
     }
 
@@ -223,31 +363,36 @@ private:
         statusMessage = "Select Wall Design";
     }
 
+    void initializeEndSelectionMenu()
+    {
+        buttons.clear();
+        buttonLabels.clear();
+
+        sf::RectangleShape runBtn(sf::Vector2f(200, 50));
+        runBtn.setPosition(sf::Vector2f(COLS * CELL_SIZE + 20, 400));
+        runBtn.setFillColor(sf::Color(255, 200, 50));
+        buttons.push_back(runBtn);
+        buttonLabels.push_back("Run");
+    }
+
     void createWallDesign(int design)
     {
         for (int i = 0; i < ROWS; i++)
             for (int j = 0; j < COLS; j++)
                 grid[i][j] = ' ';
 
-        if (design == 1)  // Cross with gaps
+        if (design == 1)
         {
-            // Horizontal cross
             for (int j = 0; j < COLS; j++)
-            {
                 grid[ROWS / 2][j] = '#';
-            }
-            // Vertical cross
             for (int i = 0; i < ROWS; i++)
-            {
                 grid[i][COLS / 2] = '#';
-            }
-            // Add gaps in the cross to allow paths
+            
             for (int i = ROWS / 2 - 3; i <= ROWS / 2 + 3; i++)
                 grid[i][COLS / 2] = ' ';
             for (int j = COLS / 2 - 3; j <= COLS / 2 + 3; j++)
                 grid[ROWS / 2][j] = ' ';
             
-            // Diagonal walls for more complexity
             for (int i = 0; i < ROWS; i++)
             {
                 if (i % 4 == 0)
@@ -257,7 +402,7 @@ private:
                 }
             }
         }
-        else if (design == 2)  // Diagonal maze
+        else if (design == 2)
         {
             for (int i = 0; i < ROWS; i++)
             {
@@ -268,21 +413,18 @@ private:
                 }
             }
         }
-        else if (design == 3)  // Multiple rooms with corridors
+        else if (design == 3)
         {
-            // Create grid of rooms with open corridors
             for (int i = 0; i < ROWS; i += 6)
             {
                 for (int j = 1; j < COLS; j++)
                 {
                     grid[i][j] = '#';
                 }
-                // Leave passage every 6 columns
                 for (int k = 0; k < COLS; k += 6)
                     grid[i][k] = ' ';
             }
             
-            // Vertical corridors
             for (int j = 0; j < COLS; j += 6)
             {
                 for (int i = 1; i < ROWS; i++)
@@ -291,7 +433,7 @@ private:
                 }
             }
         }
-        else if (design == 4)  // Spiral with passages
+        else if (design == 4)
         {
             int centerR = ROWS / 2;
             int centerC = COLS / 2;
@@ -306,14 +448,13 @@ private:
                 }
             }
             
-            // Add gaps in spiral
             for (int k = 0; k < COLS / 2; k += 4)
             {
                 grid[centerR][centerC + k] = ' ';
                 grid[centerR + k][centerC] = ' ';
             }
         }
-        else if (design == 5)  // Random sparse
+        else if (design == 5)
         {
             for (int i = 0; i < ROWS; i++)
             {
@@ -333,7 +474,6 @@ private:
 
     void renderLive()
     {
-        // Render grid live during algorithm
         window.clear(sf::Color::Black);
 
         for (int i = 0; i < ROWS; i++)
@@ -350,18 +490,26 @@ private:
                     color = sf::Color::Green;
                 else if (grid[i][j] == 'E')
                     color = sf::Color::Red;
-                else if (grid[i][j] == 'v')
-                    color = sf::Color::Blue;
                 else if (grid[i][j] == '*')
                     color = sf::Color::Yellow;
+                else if (cellState[i][j] == 3)
+                    color = sf::Color(10, 40, 150);
+                else if (cellState[i][j] == 2)
+                    color = sf::Color(80, 130, 220);
+                else if (cellState[i][j] == 1)
+                    color = sf::Color(180, 200, 255);
 
+                // Apply scale animation
+                float scale = cellAnimation[i][j];
+                float offset = (1.0f - scale) * CELL_SIZE / 2;
+                cell.setPosition(sf::Vector2f(j * CELL_SIZE + offset, i * CELL_SIZE + offset));
+                cell.setSize(sf::Vector2f((CELL_SIZE - 1) * scale, (CELL_SIZE - 1) * scale));
                 cell.setFillColor(color);
                 window.draw(cell);
             }
         }
 
         window.display();
-        this_thread::sleep_for(chrono::milliseconds(1));  // 1ms delay for smooth animation
     }
 
     void runAlgorithm()
@@ -400,9 +548,14 @@ private:
                 continue;
 
             closed.insert(current);
+            if (!(current == startPos || current == endPos))
+            {
+                cellState[current.r][current.c] = 3;
+                cellAnimation[current.r][current.c] = 0.5f;
+                createBubbles(current.r, current.c, 1);
+            }
             totalChecks++;
 
-            // Render every step
             renderLive();
 
             if (current == endPos)
@@ -427,8 +580,8 @@ private:
                         gCost[neighbor] = newGCost;
                         pq.push({neighbor, newGCost + getH(neighbor, endPos)});
                         parentOf[neighbor] = current;
-                        if (grid[nr][nc] != 'E' && grid[nr][nc] != 'S')
-                            grid[nr][nc] = 'v';
+                        if (!(neighbor == startPos || neighbor == endPos))
+                            cellState[nr][nc] = 2;
                     }
                 }
             }
@@ -437,17 +590,19 @@ private:
         auto endTime = chrono::steady_clock::now();
         timeTaken = chrono::duration_cast<chrono::milliseconds>(endTime - startTime).count();
 
-        // Draw path with animation
         if (pathFound)
         {
             pathLength = gCost[endPos];
+            pathToAnimate.clear();
             Pos temp = parentOf[endPos];
             while (!(temp == startPos))
             {
-                grid[temp.r][temp.c] = '*';
+                pathToAnimate.push_back(temp);
                 temp = parentOf[temp];
-                renderLive();  // Show path forming
             }
+            reverse(pathToAnimate.begin(), pathToAnimate.end());
+            pathAnimationIndex = 0;
+            animatingPath = true;
         }
 
         state = FINISHED;
@@ -481,6 +636,12 @@ private:
                 continue;
 
             closed.insert(current);
+            if (!(current == startPos || current == endPos))
+            {
+                cellState[current.r][current.c] = 3;
+                cellAnimation[current.r][current.c] = 0.5f;
+                createBubbles(current.r, current.c, 1);
+            }
             totalChecks++;
 
             renderLive();
@@ -507,8 +668,8 @@ private:
                         gCost[neighbor] = newGCost;
                         pq.push({neighbor, newGCost});
                         parentOf[neighbor] = current;
-                        if (grid[nr][nc] != 'E' && grid[nr][nc] != 'S')
-                            grid[nr][nc] = 'v';
+                        if (!(neighbor == startPos || neighbor == endPos))
+                            cellState[nr][nc] = 2;
                     }
                 }
             }
@@ -520,13 +681,16 @@ private:
         if (pathFound)
         {
             pathLength = gCost[endPos];
+            pathToAnimate.clear();
             Pos temp = parentOf[endPos];
             while (!(temp == startPos))
             {
-                grid[temp.r][temp.c] = '*';
+                pathToAnimate.push_back(temp);
                 temp = parentOf[temp];
-                renderLive();
             }
+            reverse(pathToAnimate.begin(), pathToAnimate.end());
+            pathAnimationIndex = 0;
+            animatingPath = true;
         }
 
         state = FINISHED;
@@ -554,6 +718,13 @@ private:
         {
             Pos current = q.front();
             q.pop();
+            
+            if (!(current == startPos || current == endPos))
+            {
+                cellState[current.r][current.c] = 3;
+                cellAnimation[current.r][current.c] = 0.5f;
+                createBubbles(current.r, current.c, 1);
+            }
             totalChecks++;
 
             renderLive();
@@ -576,8 +747,8 @@ private:
                     visited.insert(neighbor);
                     parentOf[neighbor] = current;
                     q.push(neighbor);
-                    if (grid[nr][nc] != 'E' && grid[nr][nc] != 'S')
-                        grid[nr][nc] = 'v';
+                    if (!(neighbor == startPos || neighbor == endPos))
+                        cellState[nr][nc] = 2;
                 }
             }
         }
@@ -588,14 +759,17 @@ private:
         if (pathFound)
         {
             pathLength = 0;
+            pathToAnimate.clear();
             Pos temp = parentOf[endPos];
             while (!(temp == startPos))
             {
-                grid[temp.r][temp.c] = '*';
+                pathToAnimate.push_back(temp);
                 temp = parentOf[temp];
                 pathLength++;
-                renderLive();
             }
+            reverse(pathToAnimate.begin(), pathToAnimate.end());
+            pathAnimationIndex = 0;
+            animatingPath = true;
         }
 
         state = FINISHED;
@@ -608,23 +782,66 @@ private:
         buttons.clear();
         buttonLabels.clear();
 
-        sf::RectangleShape btn(sf::Vector2f(200, 50));
-        btn.setPosition(sf::Vector2f(COLS * CELL_SIZE + 20, 100));
-        btn.setFillColor(sf::Color(100, 200, 100));
-        buttons.push_back(btn);
+        sf::RectangleShape btn1(sf::Vector2f(200, 50));
+        btn1.setPosition(sf::Vector2f(COLS * CELL_SIZE + 20, 100));
+        btn1.setFillColor(sf::Color(100, 200, 100));
+        buttons.push_back(btn1);
         buttonLabels.push_back("Run Again");
+
+        sf::RectangleShape btn2(sf::Vector2f(200, 50));
+        btn2.setPosition(sf::Vector2f(COLS * CELL_SIZE + 20, 160));
+        btn2.setFillColor(sf::Color(255, 100, 100));
+        buttons.push_back(btn2);
+        buttonLabels.push_back("Exit Program");
     }
 
     void update()
     {
-        // Update logic if needed
+        // Update bubbles
+        for (auto it = bubbles.begin(); it != bubbles.end();)
+        {
+            it->x += it->vx;
+            it->y += it->vy;
+            it->life -= 0.05f;
+            it->vy += 0.1f;  // Gravity
+            
+            if (it->life <= 0)
+                it = bubbles.erase(it);
+            else
+                ++it;
+        }
+
+        // Update cell animations
+        for (int i = 0; i < ROWS; i++)
+        {
+            for (int j = 0; j < COLS; j++)
+            {
+                if (cellAnimation[i][j] < 1.0f)
+                    cellAnimation[i][j] += 0.1f;
+                if (cellAnimation[i][j] > 1.0f)
+                    cellAnimation[i][j] = 1.0f;
+            }
+        }
+
+        // Update path animation
+        if (animatingPath && pathAnimationIndex < pathToAnimate.size())
+        {
+            Pos p = pathToAnimate[pathAnimationIndex];
+            grid[p.r][p.c] = '*';
+            cellAnimation[p.r][p.c] = 0.5f;
+            createBubbles(p.r, p.c, 2);
+            pathAnimationIndex++;
+        }
+        else if (animatingPath && pathAnimationIndex >= pathToAnimate.size())
+        {
+            animatingPath = false;
+        }
     }
 
     void render()
     {
         window.clear(sf::Color::Black);
 
-        // Draw grid
         for (int i = 0; i < ROWS; i++)
         {
             for (int j = 0; j < COLS; j++)
@@ -639,14 +856,32 @@ private:
                     color = sf::Color::Green;
                 else if (grid[i][j] == 'E')
                     color = sf::Color::Red;
-                else if (grid[i][j] == 'v')
-                    color = sf::Color::Blue;
                 else if (grid[i][j] == '*')
                     color = sf::Color::Yellow;
+                else if (cellState[i][j] == 3)
+                    color = sf::Color(10, 40, 150);
+                else if (cellState[i][j] == 2)
+                    color = sf::Color(80, 130, 220);
+                else if (cellState[i][j] == 1)
+                    color = sf::Color(180, 200, 255);
 
+                float scale = cellAnimation[i][j];
+                float offset = (1.0f - scale) * CELL_SIZE / 2;
+                cell.setPosition(sf::Vector2f(j * CELL_SIZE + offset, i * CELL_SIZE + offset));
+                cell.setSize(sf::Vector2f((CELL_SIZE - 1) * scale, (CELL_SIZE - 1) * scale));
                 cell.setFillColor(color);
                 window.draw(cell);
             }
+        }
+
+        // Draw bubbles
+        for (const auto& bubble : bubbles)
+        {
+            sf::CircleShape circle(bubble.size);
+            circle.setPosition(sf::Vector2f(bubble.x - bubble.size, bubble.y - bubble.size));
+            sf::Color bubbleColor(100, 150, 255, (int)(255 * bubble.life));
+            circle.setFillColor(bubbleColor);
+            window.draw(circle);
         }
 
         // Draw buttons
@@ -654,7 +889,7 @@ private:
         {
             window.draw(buttons[i]);
 
-            sf::Text text(font, buttonLabels[i], 16);
+            sf::Text text(font, buttonLabels[i], 14);
             text.setFillColor(sf::Color::Black);
             sf::FloatRect bounds = text.getLocalBounds();
             text.setPosition(sf::Vector2f(
@@ -664,7 +899,6 @@ private:
             window.draw(text);
         }
 
-        // Draw stats panel
         drawStatsPanel();
 
         window.display();
