@@ -1,0 +1,709 @@
+#include <SFML/Graphics.hpp>
+#include <iostream>
+#include <vector>
+#include <queue>
+#include <map>
+#include <thread>
+#include <chrono>
+#include <cmath>
+#include <algorithm>
+#include <limits>
+#include <ctime>
+#include <set>
+
+using namespace std;
+
+struct Pos
+{
+    int r, c;
+    bool operator<(const Pos &other) const
+    {
+        if (r != other.r)
+            return r < other.r;
+        return c < other.c;
+    }
+    bool operator==(const Pos &other) const
+    {
+        return r == other.r && c == other.c;
+    }
+};
+
+struct Node
+{
+    Pos pos;
+    double fCost;
+    bool operator>(const Node &other) const { return fCost > other.fCost; }
+};
+
+const int ROWS = 25;
+const int COLS = 25;
+const int CELL_SIZE = 24;
+const int WINDOW_WIDTH = COLS * CELL_SIZE + 250;
+const int WINDOW_HEIGHT = ROWS * CELL_SIZE + 50;
+
+enum Algorithm { ASTAR = 1, DIJKSTRA = 2, BFS = 3 };
+enum GameState { MENU, WALL_DESIGN, START_SELECTION, END_SELECTION, RUNNING, FINISHED };
+
+class PathfindingVisualizer
+{
+private:
+    sf::RenderWindow window;
+    vector<vector<char>> grid;
+    sf::Font font;
+    GameState state;
+    Algorithm currentAlgo;
+    int designChoice;
+    Pos startPos, endPos;
+    int totalChecks;
+    double timeTaken;
+    double pathLength;
+    bool pathFound;
+    string statusMessage;
+
+    // UI Elements
+    vector<sf::RectangleShape> buttons;
+    vector<string> buttonLabels;
+
+public:
+    PathfindingVisualizer() : window(sf::VideoMode(sf::Vector2u(WINDOW_WIDTH, WINDOW_HEIGHT)), "Pathfinding Visualizer")
+    {
+        window.setFramerateLimit(60);
+        
+        if (!font.openFromFile("C:\\Windows\\Fonts\\arial.ttf"))
+        {
+            cerr << "Warning: Could not load font" << endl;
+        }
+
+        state = MENU;
+        currentAlgo = ASTAR;
+        designChoice = 1;
+        totalChecks = 0;
+        timeTaken = 0;
+        pathLength = 0;
+        pathFound = false;
+        statusMessage = "";
+
+        grid.assign(ROWS, vector<char>(COLS, ' '));
+        initializeMenu();
+    }
+
+    void run()
+    {
+        while (window.isOpen())
+        {
+            handleEvents();
+            update();
+            render();
+        }
+    }
+
+private:
+    void handleEvents()
+    {
+        while (auto event = window.pollEvent())
+        {
+            if (event->is<sf::Event::Closed>())
+                window.close();
+
+            if (event->is<sf::Event::MouseButtonPressed>())
+            {
+                auto mouseClick = event->getIf<sf::Event::MouseButtonPressed>();
+                if (mouseClick)
+                {
+                    handleMouseClick(mouseClick->position.x, mouseClick->position.y);
+                }
+            }
+        }
+    }
+
+    void handleMouseClick(int x, int y)
+    {
+        if (state == MENU)
+        {
+            for (size_t i = 0; i < buttons.size(); i++)
+            {
+                if (buttons[i].getGlobalBounds().contains(sf::Vector2f(x, y)))
+                {
+                    currentAlgo = (Algorithm)(i + 1);
+                    state = WALL_DESIGN;
+                    initializeWallDesignMenu();
+                    break;
+                }
+            }
+        }
+        else if (state == WALL_DESIGN)
+        {
+            for (size_t i = 0; i < buttons.size(); i++)
+            {
+                if (buttons[i].getGlobalBounds().contains(sf::Vector2f(x, y)))
+                {
+                    designChoice = i + 1;
+                    createWallDesign(designChoice);
+                    state = START_SELECTION;
+                    statusMessage = "Click to set START position (green)";
+                    break;
+                }
+            }
+        }
+        else if (state == START_SELECTION)
+        {
+            int col = x / CELL_SIZE;
+            int row = y / CELL_SIZE;
+
+            if (row >= 0 && row < ROWS && col >= 0 && col < COLS && grid[row][col] != '#')
+            {
+                startPos = {row, col};
+                grid[row][col] = 'S';
+                state = END_SELECTION;
+                statusMessage = "Click to set END position (red)";
+            }
+        }
+        else if (state == END_SELECTION)
+        {
+            int col = x / CELL_SIZE;
+            int row = y / CELL_SIZE;
+
+            if (row >= 0 && row < ROWS && col >= 0 && col < COLS && 
+                grid[row][col] != '#' && !(row == startPos.r && col == startPos.c))
+            {
+                endPos = {row, col};
+                grid[row][col] = 'E';
+                state = RUNNING;
+                statusMessage = "Running algorithm...";
+                runAlgorithm();
+            }
+        }
+        else if (state == FINISHED)
+        {
+            if (buttons.size() > 0 && buttons[0].getGlobalBounds().contains(sf::Vector2f(x, y)))
+            {
+                state = MENU;
+                grid.assign(ROWS, vector<char>(COLS, ' '));
+                totalChecks = 0;
+                timeTaken = 0;
+                pathLength = 0;
+                initializeMenu();
+            }
+        }
+    }
+
+    void initializeMenu()
+    {
+        buttons.clear();
+        buttonLabels.clear();
+
+        vector<string> algoNames = {"A* (Heuristic)", "Dijkstra", "BFS"};
+        
+        for (size_t i = 0; i < algoNames.size(); i++)
+        {
+            sf::RectangleShape btn(sf::Vector2f(200, 50));
+            btn.setPosition(sf::Vector2f(COLS * CELL_SIZE + 20, 100 + i * 70));
+            btn.setFillColor(sf::Color(100, 150, 255));
+            buttons.push_back(btn);
+            buttonLabels.push_back(algoNames[i]);
+        }
+        statusMessage = "Select Algorithm";
+    }
+
+    void initializeWallDesignMenu()
+    {
+        buttons.clear();
+        buttonLabels.clear();
+
+        vector<string> designs = {"Cross", "Diagonal", "Rooms", "Spiral", "Random"};
+        
+        for (size_t i = 0; i < designs.size(); i++)
+        {
+            sf::RectangleShape btn(sf::Vector2f(200, 40));
+            btn.setPosition(sf::Vector2f(COLS * CELL_SIZE + 20, 100 + i * 50));
+            btn.setFillColor(sf::Color(150, 200, 100));
+            buttons.push_back(btn);
+            buttonLabels.push_back(designs[i]);
+        }
+        statusMessage = "Select Wall Design";
+    }
+
+    void createWallDesign(int design)
+    {
+        for (int i = 0; i < ROWS; i++)
+            for (int j = 0; j < COLS; j++)
+                grid[i][j] = ' ';
+
+        if (design == 1)  // Cross with gaps
+        {
+            // Horizontal cross
+            for (int j = 0; j < COLS; j++)
+            {
+                grid[ROWS / 2][j] = '#';
+            }
+            // Vertical cross
+            for (int i = 0; i < ROWS; i++)
+            {
+                grid[i][COLS / 2] = '#';
+            }
+            // Add gaps in the cross to allow paths
+            for (int i = ROWS / 2 - 3; i <= ROWS / 2 + 3; i++)
+                grid[i][COLS / 2] = ' ';
+            for (int j = COLS / 2 - 3; j <= COLS / 2 + 3; j++)
+                grid[ROWS / 2][j] = ' ';
+            
+            // Diagonal walls for more complexity
+            for (int i = 0; i < ROWS; i++)
+            {
+                if (i % 4 == 0)
+                {
+                    grid[i][i] = '#';
+                    if (i < ROWS) grid[i][COLS - 1 - i] = '#';
+                }
+            }
+        }
+        else if (design == 2)  // Diagonal maze
+        {
+            for (int i = 0; i < ROWS; i++)
+            {
+                for (int j = 0; j < COLS; j++)
+                {
+                    if ((i + j) % 5 == 0 && (i + j) % 7 != 0)
+                        grid[i][j] = '#';
+                }
+            }
+        }
+        else if (design == 3)  // Multiple rooms with corridors
+        {
+            // Create grid of rooms with open corridors
+            for (int i = 0; i < ROWS; i += 6)
+            {
+                for (int j = 1; j < COLS; j++)
+                {
+                    grid[i][j] = '#';
+                }
+                // Leave passage every 6 columns
+                for (int k = 0; k < COLS; k += 6)
+                    grid[i][k] = ' ';
+            }
+            
+            // Vertical corridors
+            for (int j = 0; j < COLS; j += 6)
+            {
+                for (int i = 1; i < ROWS; i++)
+                {
+                    grid[i][j] = ' ';
+                }
+            }
+        }
+        else if (design == 4)  // Spiral with passages
+        {
+            int centerR = ROWS / 2;
+            int centerC = COLS / 2;
+            
+            for (int i = 0; i < ROWS; i++)
+            {
+                for (int j = 0; j < COLS; j++)
+                {
+                    int dist = max(abs(i - centerR), abs(j - centerC));
+                    if (dist % 4 == 0 && dist > 0)
+                        grid[i][j] = '#';
+                }
+            }
+            
+            // Add gaps in spiral
+            for (int k = 0; k < COLS / 2; k += 4)
+            {
+                grid[centerR][centerC + k] = ' ';
+                grid[centerR + k][centerC] = ' ';
+            }
+        }
+        else if (design == 5)  // Random sparse
+        {
+            for (int i = 0; i < ROWS; i++)
+            {
+                for (int j = 0; j < COLS; j++)
+                {
+                    if ((double)rand() / RAND_MAX < 0.15)
+                        grid[i][j] = '#';
+                }
+            }
+        }
+    }
+
+    double getH(Pos a, Pos b)
+    {
+        return sqrt(pow(a.r - b.r, 2) + pow(a.c - b.c, 2));
+    }
+
+    void renderLive()
+    {
+        // Render grid live during algorithm
+        window.clear(sf::Color::Black);
+
+        for (int i = 0; i < ROWS; i++)
+        {
+            for (int j = 0; j < COLS; j++)
+            {
+                sf::RectangleShape cell(sf::Vector2f(CELL_SIZE - 1, CELL_SIZE - 1));
+                cell.setPosition(sf::Vector2f(j * CELL_SIZE, i * CELL_SIZE));
+
+                sf::Color color = sf::Color::White;
+                if (grid[i][j] == '#')
+                    color = sf::Color::Black;
+                else if (grid[i][j] == 'S')
+                    color = sf::Color::Green;
+                else if (grid[i][j] == 'E')
+                    color = sf::Color::Red;
+                else if (grid[i][j] == 'v')
+                    color = sf::Color::Blue;
+                else if (grid[i][j] == '*')
+                    color = sf::Color::Yellow;
+
+                cell.setFillColor(color);
+                window.draw(cell);
+            }
+        }
+
+        window.display();
+        this_thread::sleep_for(chrono::milliseconds(1));  // 1ms delay for smooth animation
+    }
+
+    void runAlgorithm()
+    {
+        if (currentAlgo == ASTAR)
+            solveAStar();
+        else if (currentAlgo == DIJKSTRA)
+            solveDijkstra();
+        else
+            solveBFS();
+    }
+
+    void solveAStar()
+    {
+        auto startTime = chrono::steady_clock::now();
+        priority_queue<Node, vector<Node>, greater<Node>> pq;
+        pq.push({startPos, getH(startPos, endPos)});
+
+        map<Pos, Pos> parentOf;
+        map<Pos, double> gCost;
+        set<Pos> closed;
+        gCost[startPos] = 0;
+
+        totalChecks = 0;
+        int dr[] = {-1, 1, 0, 0, -1, -1, 1, 1};
+        int dc[] = {0, 0, -1, 1, -1, 1, -1, 1};
+
+        pathFound = false;
+
+        while (!pq.empty())
+        {
+            Pos current = pq.top().pos;
+            pq.pop();
+
+            if (closed.find(current) != closed.end())
+                continue;
+
+            closed.insert(current);
+            totalChecks++;
+
+            // Render every step
+            renderLive();
+
+            if (current == endPos)
+            {
+                pathFound = true;
+                break;
+            }
+
+            for (int i = 0; i < 8; i++)
+            {
+                int nr = current.r + dr[i];
+                int nc = current.c + dc[i];
+                Pos neighbor = {nr, nc};
+                double weight = (i < 4) ? 1.0 : 1.414;
+
+                if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS &&
+                    grid[nr][nc] != '#' && closed.find(neighbor) == closed.end())
+                {
+                    double newGCost = gCost[current] + weight;
+                    if (gCost.find(neighbor) == gCost.end() || newGCost < gCost[neighbor])
+                    {
+                        gCost[neighbor] = newGCost;
+                        pq.push({neighbor, newGCost + getH(neighbor, endPos)});
+                        parentOf[neighbor] = current;
+                        if (grid[nr][nc] != 'E' && grid[nr][nc] != 'S')
+                            grid[nr][nc] = 'v';
+                    }
+                }
+            }
+        }
+
+        auto endTime = chrono::steady_clock::now();
+        timeTaken = chrono::duration_cast<chrono::milliseconds>(endTime - startTime).count();
+
+        // Draw path with animation
+        if (pathFound)
+        {
+            pathLength = gCost[endPos];
+            Pos temp = parentOf[endPos];
+            while (!(temp == startPos))
+            {
+                grid[temp.r][temp.c] = '*';
+                temp = parentOf[temp];
+                renderLive();  // Show path forming
+            }
+        }
+
+        state = FINISHED;
+        statusMessage = pathFound ? "Path found!" : "No path found!";
+        initializeFinishMenu();
+    }
+
+    void solveDijkstra()
+    {
+        auto startTime = chrono::steady_clock::now();
+        priority_queue<Node, vector<Node>, greater<Node>> pq;
+        pq.push({startPos, 0});
+
+        map<Pos, Pos> parentOf;
+        map<Pos, double> gCost;
+        set<Pos> closed;
+        gCost[startPos] = 0;
+
+        totalChecks = 0;
+        int dr[] = {-1, 1, 0, 0, -1, -1, 1, 1};
+        int dc[] = {0, 0, -1, 1, -1, 1, -1, 1};
+
+        pathFound = false;
+
+        while (!pq.empty())
+        {
+            Pos current = pq.top().pos;
+            pq.pop();
+
+            if (closed.find(current) != closed.end())
+                continue;
+
+            closed.insert(current);
+            totalChecks++;
+
+            renderLive();
+
+            if (current == endPos)
+            {
+                pathFound = true;
+                break;
+            }
+
+            for (int i = 0; i < 8; i++)
+            {
+                int nr = current.r + dr[i];
+                int nc = current.c + dc[i];
+                Pos neighbor = {nr, nc};
+                double weight = (i < 4) ? 1.0 : 1.414;
+
+                if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS &&
+                    grid[nr][nc] != '#' && closed.find(neighbor) == closed.end())
+                {
+                    double newGCost = gCost[current] + weight;
+                    if (gCost.find(neighbor) == gCost.end() || newGCost < gCost[neighbor])
+                    {
+                        gCost[neighbor] = newGCost;
+                        pq.push({neighbor, newGCost});
+                        parentOf[neighbor] = current;
+                        if (grid[nr][nc] != 'E' && grid[nr][nc] != 'S')
+                            grid[nr][nc] = 'v';
+                    }
+                }
+            }
+        }
+
+        auto endTime = chrono::steady_clock::now();
+        timeTaken = chrono::duration_cast<chrono::milliseconds>(endTime - startTime).count();
+
+        if (pathFound)
+        {
+            pathLength = gCost[endPos];
+            Pos temp = parentOf[endPos];
+            while (!(temp == startPos))
+            {
+                grid[temp.r][temp.c] = '*';
+                temp = parentOf[temp];
+                renderLive();
+            }
+        }
+
+        state = FINISHED;
+        statusMessage = pathFound ? "Path found!" : "No path found!";
+        initializeFinishMenu();
+    }
+
+    void solveBFS()
+    {
+        auto startTime = chrono::steady_clock::now();
+        queue<Pos> q;
+        q.push(startPos);
+
+        map<Pos, Pos> parentOf;
+        set<Pos> visited;
+        visited.insert(startPos);
+
+        totalChecks = 0;
+        int dr[] = {-1, 1, 0, 0, -1, -1, 1, 1};
+        int dc[] = {0, 0, -1, 1, -1, 1, -1, 1};
+
+        pathFound = false;
+
+        while (!q.empty())
+        {
+            Pos current = q.front();
+            q.pop();
+            totalChecks++;
+
+            renderLive();
+
+            if (current == endPos)
+            {
+                pathFound = true;
+                break;
+            }
+
+            for (int i = 0; i < 8; i++)
+            {
+                int nr = current.r + dr[i];
+                int nc = current.c + dc[i];
+                Pos neighbor = {nr, nc};
+
+                if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS &&
+                    grid[nr][nc] != '#' && visited.find(neighbor) == visited.end())
+                {
+                    visited.insert(neighbor);
+                    parentOf[neighbor] = current;
+                    q.push(neighbor);
+                    if (grid[nr][nc] != 'E' && grid[nr][nc] != 'S')
+                        grid[nr][nc] = 'v';
+                }
+            }
+        }
+
+        auto endTime = chrono::steady_clock::now();
+        timeTaken = chrono::duration_cast<chrono::milliseconds>(endTime - startTime).count();
+
+        if (pathFound)
+        {
+            pathLength = 0;
+            Pos temp = parentOf[endPos];
+            while (!(temp == startPos))
+            {
+                grid[temp.r][temp.c] = '*';
+                temp = parentOf[temp];
+                pathLength++;
+                renderLive();
+            }
+        }
+
+        state = FINISHED;
+        statusMessage = pathFound ? "Path found!" : "No path found!";
+        initializeFinishMenu();
+    }
+
+    void initializeFinishMenu()
+    {
+        buttons.clear();
+        buttonLabels.clear();
+
+        sf::RectangleShape btn(sf::Vector2f(200, 50));
+        btn.setPosition(sf::Vector2f(COLS * CELL_SIZE + 20, 100));
+        btn.setFillColor(sf::Color(100, 200, 100));
+        buttons.push_back(btn);
+        buttonLabels.push_back("Run Again");
+    }
+
+    void update()
+    {
+        // Update logic if needed
+    }
+
+    void render()
+    {
+        window.clear(sf::Color::Black);
+
+        // Draw grid
+        for (int i = 0; i < ROWS; i++)
+        {
+            for (int j = 0; j < COLS; j++)
+            {
+                sf::RectangleShape cell(sf::Vector2f(CELL_SIZE - 1, CELL_SIZE - 1));
+                cell.setPosition(sf::Vector2f(j * CELL_SIZE, i * CELL_SIZE));
+
+                sf::Color color = sf::Color::White;
+                if (grid[i][j] == '#')
+                    color = sf::Color::Black;
+                else if (grid[i][j] == 'S')
+                    color = sf::Color::Green;
+                else if (grid[i][j] == 'E')
+                    color = sf::Color::Red;
+                else if (grid[i][j] == 'v')
+                    color = sf::Color::Blue;
+                else if (grid[i][j] == '*')
+                    color = sf::Color::Yellow;
+
+                cell.setFillColor(color);
+                window.draw(cell);
+            }
+        }
+
+        // Draw buttons
+        for (size_t i = 0; i < buttons.size(); i++)
+        {
+            window.draw(buttons[i]);
+
+            sf::Text text(font, buttonLabels[i], 16);
+            text.setFillColor(sf::Color::Black);
+            sf::FloatRect bounds = text.getLocalBounds();
+            text.setPosition(sf::Vector2f(
+                buttons[i].getPosition().x + (buttons[i].getSize().x - bounds.size.x) / 2,
+                buttons[i].getPosition().y + (buttons[i].getSize().y - bounds.size.y) / 2
+            ));
+            window.draw(text);
+        }
+
+        // Draw stats panel
+        drawStatsPanel();
+
+        window.display();
+    }
+
+    void drawStatsPanel()
+    {
+        int panelX = COLS * CELL_SIZE + 10;
+        int panelY = 10;
+
+        sf::Text statusText(font, statusMessage, 14);
+        statusText.setPosition(sf::Vector2f(panelX, panelY));
+        statusText.setFillColor(sf::Color::White);
+        window.draw(statusText);
+
+        if (state == FINISHED)
+        {
+            sf::Text checksText(font, "Checks: " + to_string(totalChecks), 12);
+            checksText.setPosition(sf::Vector2f(panelX, panelY + 280));
+            checksText.setFillColor(sf::Color::White);
+            window.draw(checksText);
+
+            sf::Text timeText(font, "Time: " + to_string((int)timeTaken) + "ms", 12);
+            timeText.setPosition(sf::Vector2f(panelX, panelY + 300));
+            timeText.setFillColor(sf::Color::White);
+            window.draw(timeText);
+
+            sf::Text pathText(font, "Path Length: " + to_string((int)pathLength), 12);
+            pathText.setPosition(sf::Vector2f(panelX, panelY + 320));
+            pathText.setFillColor(sf::Color::White);
+            window.draw(pathText);
+        }
+    }
+};
+
+int main()
+{
+    srand((unsigned)time(0));
+    PathfindingVisualizer visualizer;
+    visualizer.run();
+    return 0;
+}
