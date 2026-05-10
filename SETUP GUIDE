@@ -1,0 +1,154 @@
+# SFML Pathfinding Visualizer - Setup Guide
+
+## Overview
+This is a converted version of your pathfinding visualizer using SFML 3.1.0 for graphical rendering instead of console output.
+
+## Features
+- **Interactive GUI**: Click to select start and end positions
+- **Visual Rendering**: Color-coded grid cells (green=start, red=end, blue=exploring, yellow=path)
+- **Three Algorithms**: A*, Dijkstra, BFS
+- **Five Wall Designs**: Cross, Diagonal, Rooms, Spiral, Random
+- **Real-time Statistics**: Nodes checked, time taken, path length
+
+## Prerequisites
+- MinGW-w64 with GCC 14.2 (as seen in your SFML folder)
+- CMake 3.16 or higher
+- SFML 3.1.0 (you already have this at `C:\Windows-SSD (C:)\SFML-3.1.0-windows-gcc-14.2`)
+
+## Installation & Compilation
+
+### Step 1: Create Project Directory
+```bash
+mkdir PathfindingVisualizer
+cd PathfindingVisualizer
+```
+
+### Step 2: Copy Files
+- Copy `pathfinding_sfml.cpp` to your project directory
+- Copy `CMakeLists.txt` to your project directory
+
+### Step 3: Build with CMake
+```bash
+# Create build directory
+mkdir build
+cd build
+
+# Configure CMake (adjust path if SFML is in different location)
+cmake .. -G "MinGW Makefiles" -DSFML_DIR="C:/SFML-3.1.0-windows-gcc-14.2/lib/cmake/SFML"
+
+# Build
+mingw32-make
+```
+
+### Step 4: Run
+```bash
+./PathfindingVisualizer.exe
+```
+
+## How to Use
+
+### Menu Selection
+1. **Algorithm Menu**: Click on your preferred pathfinding algorithm
+   - A* (Heuristic-based, usually fastest)
+   - Dijkstra (Guaranteed optimal path)
+   - BFS (Uniform exploration)
+
+2. **Wall Design Menu**: Choose your maze configuration
+   - Cross Pattern: Simple cross walls
+   - Diagonal Maze: Complex diagonal pattern
+   - Multiple Rooms: Separated rooms with passages
+   - Spiral Pattern: Concentric spiral walls
+   - Random Sparse: Random wall placement
+
+3. **Start Position**: Click on any empty cell to set the starting point (appears green)
+
+4. **End Position**: Click on another empty cell to set the ending point (appears red)
+
+5. **Algorithm Runs**: Automatically executes the selected algorithm
+   - Blue cells = explored nodes
+   - Yellow cells = final path
+   - Statistics shown on the right panel
+
+6. **Run Again**: Click the button to reset and try another configuration
+
+## Color Coding
+| Color | Meaning |
+|-------|---------|
+| White | Empty space |
+| Black | Wall |
+| Green | Start position |
+| Red | End position |
+| Blue | Nodes explored |
+| Yellow | Final path |
+
+## Keyboard/Mouse Controls
+- **Mouse Click**: Select algorithm, design, positions, and buttons
+- **Close Window**: Click the X button to exit
+
+## Customization
+
+### Grid Size
+Edit these constants in `pathfinding_sfml.cpp`:
+```cpp
+const int ROWS = 15;        // Number of rows
+const int COLS = 30;        // Number of columns
+const int CELL_SIZE = 30;   // Pixel size of each cell
+```
+
+### Font
+The code looks for Arial font at `C:\Windows\Fonts\arial.ttf`. If you have a different font:
+```cpp
+font.loadFromFile("path/to/your/font.ttf");
+```
+
+### Colors
+Modify the color values in the `render()` function:
+```cpp
+if (grid[i][j] == 'S')
+    color = sf::Color::Green;  // Change these RGB values
+```
+
+## Troubleshooting
+
+### Build Fails
+1. Check SFML path in CMakeLists.txt matches your installation
+2. Ensure CMake can find gcc: `gcc --version`
+3. Delete build folder and try again
+
+### Missing DLLs
+1. Copy SFML DLL files from `SFML-3.1.0-windows-gcc-14.2/bin/` to your executable directory:
+   - sfml-graphics-3.dll
+   - sfml-window-3.dll
+   - sfml-system-3.dll
+
+### Font Not Loading
+- This is non-critical; the program will still work without fonts
+- Change the font path or ensure arial.ttf exists at `C:\Windows\Fonts\arial.ttf`
+
+### Window Won't Respond
+- The algorithm runs in the main thread; for long computations, it may appear frozen briefly
+- This is normal; it will be responsive again when the algorithm completes
+
+## Algorithm Complexity
+
+| Algorithm | Time Complexity | Space Complexity | Notes |
+|-----------|-----------------|------------------|-------|
+| A* | O(b^d) | O(n) | Usually fastest with heuristic |
+| Dijkstra | O(n²) | O(n) | Always finds optimal path |
+| BFS | O(n) | O(n) | Explores uniformly in all directions |
+
+## Files Included
+- `pathfinding_sfml.cpp` - Main application code
+- `CMakeLists.txt` - Build configuration
+- `SETUP_GUIDE.md` - This guide
+
+## Future Enhancements
+Potential improvements you could add:
+1. Speed control slider
+2. Path smoothing
+3. Different heuristics for A*
+4. Pause/Resume during execution
+5. Save/Load configurations
+6. Performance graphs
+7. Weighted terrain costs
+8. Different movement patterns (4-directional vs 8-directional)
