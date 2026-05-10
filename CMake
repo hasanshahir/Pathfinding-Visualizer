@@ -1,0 +1,43 @@
+cmake_minimum_required(VERSION 3.16)
+project(PathfindingVisualizer)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Correct SFML paths - nested under SFML-3.1.0 folder
+set(SFML_ROOT "C:/SFML-3.1.0-windows-gcc-14.2.0-mingw-64-bit/SFML-3.1.0")
+set(SFML_INCLUDE_DIR "C:/SFML-3.1.0-windows-gcc-14.2.0-mingw-64-bit/SFML-3.1.0/include")
+set(SFML_LIB_DIR "C:/SFML-3.1.0-windows-gcc-14.2.0-mingw-64-bit/SFML-3.1.0/lib")
+
+# Add include paths globally
+include_directories(${SFML_INCLUDE_DIR})
+link_directories(${SFML_LIB_DIR})
+
+# Create executable
+add_executable(PathfindingVisualizer pathfinding_sfml.cpp)
+
+# Manually link SFML
+target_include_directories(PathfindingVisualizer PUBLIC ${SFML_INCLUDE_DIR})
+target_link_directories(PathfindingVisualizer PUBLIC ${SFML_LIB_DIR})
+
+# Link the SFML libraries
+target_link_libraries(PathfindingVisualizer PRIVATE 
+    sfml-graphics
+    sfml-window
+    sfml-system
+)
+
+# Copy SFML DLLs to output directory (Windows)
+if(WIN32)
+    add_custom_command(TARGET PathfindingVisualizer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "C:/SFML-3.1.0-windows-gcc-14.2.0-mingw-64-bit/SFML-3.1.0/bin/sfml-graphics-3.dll"
+        "C:/SFML-3.1.0-windows-gcc-14.2.0-mingw-64-bit/SFML-3.1.0/bin/sfml-window-3.dll"
+        "C:/SFML-3.1.0-windows-gcc-14.2.0-mingw-64-bit/SFML-3.1.0/bin/sfml-system-3.dll"
+        $<TARGET_FILE_DIR:PathfindingVisualizer>
+        COMMENT "Copying SFML DLLs"
+    )
+endif()
+
+message(STATUS "SFML Include Dir: ${SFML_INCLUDE_DIR}")
+message(STATUS "SFML Lib Dir: ${SFML_LIB_DIR}")
